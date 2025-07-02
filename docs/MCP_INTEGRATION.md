@@ -2,142 +2,363 @@
 
 ## Overview
 
-This document provides complete examples for integrating the MCP WebScraper with AI agents and Model Context Protocol (MCP) environments.
+This document provides complete examples for integrating the MCP WebScraper with AI agents using the Model Context Protocol (MCP). The webscraper exposes three main tools (`scrape_url`, `scrape_batch`, `validate_selectors`) and configuration resources through both HTTP transport and stdio transport.
 
 ## Table of Contents
 
-1. [Quick Start](#quick-start)
-2. [API Integration](#api-integration)
-3. [CLI Integration](#cli-integration)
-4. [Python SDK Examples](#python-sdk-examples)
-5. [Error Handling](#error-handling)
-6. [Best Practices](#best-practices)
+1. [MCP Server Setup](#mcp-server-setup)
+2. [MCP Tools Overview](#mcp-tools-overview)
+3. [Python MCP Client Integration](#python-mcp-client-integration)
+4. [Cursor Integration](#cursor-integration)
+5. [REST API Integration](#rest-api-integration)
+6. [CLI Integration](#cli-integration)
+7. [Error Handling](#error-handling)
+8. [Best Practices](#best-practices)
 
 ---
 
-## Quick Start
+## MCP Server Setup
 
-### 1. Start the Service
+### 1. Start the MCP Server
+
+The MCP WebScraper can be accessed through multiple transports:
+
+#### HTTP Transport (Recommended for AI Agents)
 
 ```bash
-# Start the API server
+# Start the FastAPI server with mounted MCP endpoint
 uvicorn src.mcp_webscraper.api.main:app --host 0.0.0.0 --port 8000
 
 # Or use the Makefile
 make run
 ```
 
-### 2. Test Basic Functionality
+The MCP server is mounted at `/mcp` and provides streamable HTTP transport.
+
+#### Stdio Transport (For Cursor Integration)
 
 ```bash
-# Test with a simple URL
-curl -X POST "http://localhost:8000/scrape" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input_type": "url",
-    "target": "https://quotes.toscrape.com/"
-  }'
+# Run MCP server directly with stdio transport
+python -m src.mcp_webscraper.mcp_server
+```
+
+### 2. Verify MCP Server
+
+```bash
+# Test the HTTP endpoint
+curl http://localhost:8000/mcp/info
+
+# Check available tools
+curl http://localhost:8000/mcp/tools
 ```
 
 ---
 
-## API Integration
+## MCP Tools Overview
 
-### Basic URL Scraping
+### Available Tools
+
+| Tool | Description | Input | Output |
+|------|-------------|-------|--------|
+| `scrape_url` | Scrape a single URL | url, custom_selectors, force_dynamic | Structured data with metadata |
+| `scrape_batch` | Scrape multiple URLs | urls[], custom_selectors, force_dynamic | Combined results from all URLs |
+| `validate_selectors` | Test CSS selectors | url, selectors{} | Validation results with samples |
+
+### Available Resources
+
+| Resource | Description |
+|----------|-------------|
+| `config://webscraper` | Current webscraper configuration |
+| `status://jobs` | Active jobs status information |
+
+---
+
+## Python MCP Client Integration
+
+### Basic MCP Client Setup
+
+```python
+import asyncio
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async def webscraper_mcp_client():
+    """Connect to webscraper MCP server and use tools."""
+    
+    # Connect to the MCP server via HTTP
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            # Initialize the connection
+            await session.initialize()
+            
+            # List available tools
+            tools_response = await session.list_tools()
+            print("Available tools:")
+            for tool in tools_response.tools:
+                print(f"  - {tool.name}: {tool.description}")
+            
+            # List available resources
+            resources_response = await session.list_resources()
+            print("\nAvailable resources:")
+            for resource in resources_response.resources:
+                print(f"  - {resource.uri}")
+            
+            return session
+
+# Run the client
+asyncio.run(webscraper_mcp_client())
+```
+
+### Using the scrape_url Tool
+
+```python
+async def scrape_single_url():
+    """Example of using the scrape_url MCP tool."""
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Simple URL scraping
+            result = await session.call_tool(
+                "scrape_url",
+                arguments={
+                    "url": "https://quotes.toscrape.com/",
+                }
+            )
+            
+            print(f"Scraped {result.content[0].json['data_count']} items")
+            print(f"Processing time: {result.content[0].json['processing_time']:.2f}s")
+            
+            # Advanced scraping with custom selectors
+            result = await session.call_tool(
+                "scrape_url",
+                arguments={
+                    "url": "https://news.ycombinator.com/",
+                    "custom_selectors": {
+                        "container": ".athing",
+                        "title": ".titleline > a",
+                        "score": ".score"
+                    }
+                }
+            )
+            
+            # Access structured data
+            scraped_data = result.content[0].json
+            print(f"Extraction method: {scraped_data['extraction_method']}")
+            
+            for item in scraped_data['data'][:3]:  # Show first 3 items
+                print(f"Title: {item.get('metadata', {}).get('title', 'N/A')}")
+
+asyncio.run(scrape_single_url())
+```
+
+### Using the scrape_batch Tool
+
+```python
+async def scrape_multiple_urls():
+    """Example of using the scrape_batch MCP tool."""
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Batch scraping
+            urls = [
+                "https://quotes.toscrape.com/page/1/",
+                "https://quotes.toscrape.com/page/2/",
+                "https://quotes.toscrape.com/page/3/"
+            ]
+            
+            result = await session.call_tool(
+                "scrape_batch",
+                arguments={
+                    "urls": urls,
+                    "custom_selectors": {
+                        "container": ".quote",
+                        "text": ".text",
+                        "author": ".author"
+                    }
+                }
+            )
+            
+            # Access batch results
+            batch_data = result.content[0].json
+            print(f"Processed {batch_data['total_urls']} URLs")
+            print(f"Successfully scraped {batch_data['successful_urls']} URLs")
+            print(f"Total items extracted: {batch_data['total_items']}")
+            
+            # Process combined results
+            for item in batch_data['results'][:5]:  # Show first 5 items
+                quote = item.get('metadata', {}).get('text', '')
+                author = item.get('metadata', {}).get('author', '')
+                print(f"'{quote}' - {author}")
+
+asyncio.run(scrape_multiple_urls())
+```
+
+### Using the validate_selectors Tool
+
+```python
+async def validate_css_selectors():
+    """Example of using the validate_selectors MCP tool."""
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Test selectors before scraping
+            selectors_to_test = {
+                "title": "h1, .title, .headline",
+                "price": ".price, .cost, .amount",
+                "rating": ".rating, .stars",
+                "description": ".description, .summary"
+            }
+            
+            result = await session.call_tool(
+                "validate_selectors",
+                arguments={
+                    "url": "https://example-ecommerce.com/product/123",
+                    "selectors": selectors_to_test
+                }
+            )
+            
+            # Check validation results
+            validation_data = result.content[0].json
+            print(f"Tested {validation_data['selectors_tested']} selectors")
+            print(f"Valid selectors: {validation_data['valid_selectors']}")
+            print(f"Invalid selectors: {validation_data['invalid_selectors']}")
+            
+            # Show sample matches
+            for selector, samples in validation_data['sample_matches'].items():
+                print(f"\n{selector} found:")
+                for sample in samples[:2]:  # Show first 2 samples
+                    print(f"  - {sample}")
+
+asyncio.run(validate_css_selectors())
+```
+
+### Using MCP Resources
+
+```python
+async def read_webscraper_resources():
+    """Example of reading MCP resources."""
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Read configuration resource
+            config_content, mime_type = await session.read_resource("config://webscraper")
+            print("Webscraper Configuration:")
+            print(config_content)
+            
+            # Read jobs status resource
+            status_content, mime_type = await session.read_resource("status://jobs")
+            print("\nJobs Status:")
+            print(status_content)
+
+asyncio.run(read_webscraper_resources())
+```
+
+---
+
+## Cursor Integration
+
+### Setup for Cursor IDE
+
+**Important**: Do NOT run the MCP server command in your terminal. Instead, configure it in Cursor's MCP configuration file so Cursor can manage the server automatically.
+
+1. **Create the MCP configuration file** at `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "servers": {
+    "webscraper": {
+      "command": "python",
+      "args": ["-m", "src.mcp_webscraper.mcp_server"],
+      "cwd": "/absolute/path/to/your/webscraper/project"
+    }
+  }
+}
+```
+
+**Key Points:**
+- Use the **absolute path** to your project directory in the `cwd` field
+- The `command` and `args` tell Cursor how to start the MCP server
+- Cursor will automatically start/stop the server as needed
+- **DO NOT** run `python -m src.mcp_webscraper.mcp_server` in your terminal
+
+2. **Restart Cursor** to load the MCP server configuration.
+
+3. **Verify the connection** - You should see the webscraper available in Cursor's MCP servers list.
+
+4. **Use in Cursor chat**:
+
+```
+@webscraper scrape_url url="https://quotes.toscrape.com/" custom_selectors='{"container": ".quote", "text": ".text", "author": ".author"}'
+```
+
+### Example Cursor Workflows
+
+```
+# Scrape a news website
+@webscraper scrape_url url="https://news.ycombinator.com/" custom_selectors='{"container": ".athing", "title": ".titleline > a"}'
+
+# Validate selectors before scraping
+@webscraper validate_selectors url="https://example.com/" selectors='{"title": "h1", "price": ".price"}'
+
+# Batch scrape multiple pages
+@webscraper scrape_batch urls='["https://quotes.toscrape.com/page/1/", "https://quotes.toscrape.com/page/2/"]'
+```
+
+---
+
+## REST API Integration
+
+### Using the REST API Endpoints
 
 ```python
 import requests
-import json
 import time
 
-# Submit scraping job
-response = requests.post("http://localhost:8000/scrape", json={
-    "input_type": "url",
-    "target": "https://news.ycombinator.com/",
-    "custom_selectors": {
-        "container": ".athing",
-        "title": ".titleline > a",
-        "score": ".score"
-    }
-})
-
-job_data = response.json()
-job_id = job_data["job_id"]
-
-# Poll for completion
-while True:
-    status_response = requests.get(f"http://localhost:8000/status/{job_id}")
-    status_data = status_response.json()
+def rest_api_scraping():
+    """Example using the REST API directly."""
     
-    if status_data["status"] == "completed":
-        # Get results
-        results_response = requests.get(f"http://localhost:8000/results/{job_id}")
-        results = results_response.json()
+    # Submit scraping job
+    response = requests.post("http://localhost:8000/scrape", json={
+        "input_type": "url",
+        "target": "https://quotes.toscrape.com/",
+        "custom_selectors": {
+            "container": ".quote",
+            "text": ".text",
+            "author": ".author"
+        }
+    })
+    
+    job_data = response.json()
+    job_id = job_data["job_id"]
+    
+    # Poll for completion
+    while True:
+        status_response = requests.get(f"http://localhost:8000/status/{job_id}")
+        status_data = status_response.json()
         
-        print(f"Scraped {len(results['data'])} items")
-        for item in results['data'][:3]:  # Show first 3
-            print(f"- {item['text'][:100]}...")
-        break
-    elif status_data["status"] == "failed":
-        print(f"Job failed: {status_data.get('error', 'Unknown error')}")
-        break
-    else:
-        print(f"Status: {status_data['status']}")
+        if status_data["status"] == "completed":
+            # Get results
+            results_response = requests.get(f"http://localhost:8000/results/{job_id}")
+            results = results_response.json()
+            
+            print(f"Scraped {len(results['data'])} items")
+            return results
+        elif status_data["status"] == "failed":
+            print(f"Job failed: {status_data.get('error', 'Unknown error')}")
+            break
+        
         time.sleep(2)
-```
 
-### Batch File Processing
-
-```python
-# Create a URL list file
-urls = [
-    "https://quotes.toscrape.com/page/1/",
-    "https://quotes.toscrape.com/page/2/",
-    "https://quotes.toscrape.com/page/3/"
-]
-
-with open("batch_urls.json", "w") as f:
-    json.dump({"urls": urls}, f)
-
-# Submit batch job
-response = requests.post("http://localhost:8000/scrape", json={
-    "input_type": "file",
-    "target": "batch_urls.json"
-})
-
-# Monitor multiple jobs (each URL gets its own job)
-# Process results as they complete
-```
-
-### Custom Selector Patterns
-
-```python
-# E-commerce product scraping
-ecommerce_selectors = {
-    "container": ".product-item",
-    "title": ".product-title",
-    "price": ".price",
-    "rating": ".rating",
-    "availability": ".stock-status"
-}
-
-# News article scraping
-news_selectors = {
-    "container": "article",
-    "headline": "h1, h2.headline",
-    "author": ".author, .byline",
-    "date": ".date, time",
-    "content": ".article-body, .content"
-}
-
-# Social media scraping
-social_selectors = {
-    "container": ".post",
-    "content": ".post-content",
-    "author": ".author-name",
-    "timestamp": ".timestamp",
-    "likes": ".like-count"
-}
+# Run the example
+results = rest_api_scraping()
 ```
 
 ---
@@ -148,30 +369,23 @@ social_selectors = {
 
 ```bash
 # Basic scraping
-python -m src.mcp_webscraper.cli scrape --url "https://example.com"
+python -m src.mcp_webscraper.cli scrape --url "https://quotes.toscrape.com/"
 
-# With output directory
+# With custom selectors
 python -m src.mcp_webscraper.cli scrape \
-  --url "https://example.com" \
-  --output-dir ./my_results
+  --url "https://news.ycombinator.com/" \
+  --selectors '{"container": ".athing", "title": ".titleline > a"}'
 
-# Verbose output
+# Force dynamic rendering
 python -m src.mcp_webscraper.cli scrape \
-  --url "https://example.com" \
-  --verbose
+  --url "https://spa-example.com/" \
+  --force-dynamic
 ```
 
-### Batch File Processing
+### Batch Processing
 
 ```bash
-# Create URL list
-echo "https://quotes.toscrape.com/page/1/" > urls.txt
-echo "https://quotes.toscrape.com/page/2/" >> urls.txt
-
-# Process file
-python -m src.mcp_webscraper.cli scrape --list-file urls.txt
-
-# JSON format
+# Create URL list file
 cat > urls.json << EOF
 {
   "urls": [
@@ -181,152 +395,73 @@ cat > urls.json << EOF
 }
 EOF
 
+# Process batch
 python -m src.mcp_webscraper.cli scrape --list-file urls.json
 ```
 
----
+### Selector Validation
 
-## Python SDK Examples
-
-### Using the Core Scraper Directly
-
-```python
-import asyncio
-from src.mcp_webscraper.core import WebScraper
-
-async def scrape_example():
-    scraper = WebScraper(
-        timeout=30,
-        max_retries=3,
-        request_delay=1.0,
-        user_agent_rotation=True
-    )
-    
-    try:
-        # Simple scraping
-        result = await scraper.scrape_url("https://quotes.toscrape.com/")
-        print(f"Scraped {len(result.data)} items")
-        
-        # Custom selectors
-        custom_selectors = {
-            "container": ".quote",
-            "text": ".text",
-            "author": ".author"
-        }
-        
-        result = await scraper.scrape_url(
-            "https://quotes.toscrape.com/",
-            custom_selectors=custom_selectors
-        )
-        
-        for item in result.data:
-            print(f"Quote: {item.metadata.get('text', '')}")
-            print(f"Author: {item.metadata.get('author', '')}")
-            print("---")
-            
-    finally:
-        await scraper.close()
-
-# Run the example
-asyncio.run(scrape_example())
-```
-
-### Job Manager Integration
-
-```python
-import asyncio
-from src.mcp_webscraper.jobs.manager import JobManager
-from src.mcp_webscraper.config.settings import get_settings
-
-async def job_manager_example():
-    settings = get_settings()
-    job_manager = JobManager(
-        **settings.get_job_manager_config()
-    )
-    
-    try:
-        # Start the job manager
-        await job_manager.start()
-        
-        # Submit a job
-        job_id = await job_manager.submit_job(
-            input_type="url",
-            target="https://quotes.toscrape.com/"
-        )
-        
-        print(f"Submitted job: {job_id}")
-        
-        # Monitor job progress
-        while True:
-            status = job_manager.get_job_status(job_id)
-            if not status:
-                print("Job not found")
-                break
-                
-            print(f"Status: {status.status}")
-            
-            if status.status in ["completed", "failed"]:
-                break
-                
-            await asyncio.sleep(1)
-            
-    finally:
-        await job_manager.stop()
-
-asyncio.run(job_manager_example())
+```bash
+# Validate selectors
+python -m src.mcp_webscraper.cli validate \
+  --url "https://news.ycombinator.com/" \
+  --selectors '{"title": ".titleline > a", "score": ".score"}'
 ```
 
 ---
 
 ## Error Handling
 
-### Handling API Errors
+### MCP Client Error Handling
 
 ```python
-import requests
+from mcp.shared.exceptions import McpError
 
-def safe_scrape(url, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            response = requests.post("http://localhost:8000/scrape", 
-                json={"input_type": "url", "target": url},
-                timeout=30
-            )
-            response.raise_for_status()
-            return response.json()
-            
-        except requests.exceptions.ConnectionError:
-            print(f"Connection error (attempt {attempt + 1})")
-            if attempt == max_retries - 1:
-                raise
+async def robust_mcp_client():
+    """MCP client with comprehensive error handling."""
+    
+    try:
+        async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
                 
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 422:
-                print(f"Validation error: {e.response.json()}")
-                return None  # Don't retry validation errors
-            raise
-            
-        except requests.exceptions.Timeout:
-            print(f"Timeout (attempt {attempt + 1})")
-            if attempt == max_retries - 1:
-                raise
+                # Call tool with error handling
+                try:
+                    result = await session.call_tool(
+                        "scrape_url",
+                        arguments={"url": "https://invalid-url"}
+                    )
+                    return result
+                    
+                except McpError as e:
+                    print(f"MCP error: {e}")
+                    return None
+                    
+    except ConnectionError:
+        print("Could not connect to MCP server")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return None
 ```
 
-### Circuit Breaker Pattern
+### Circuit Breaker for MCP Calls
 
 ```python
-import requests
 import time
+from typing import Optional
 
-class SimpleCircuitBreaker:
-    def __init__(self, failure_threshold=5, recovery_timeout=60):
+class MCPCircuitBreaker:
+    """Circuit breaker for MCP tool calls."""
+    
+    def __init__(self, failure_threshold=3, recovery_timeout=60):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_count = 0
         self.last_failure_time = None
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
     
-    def call(self, func, *args, **kwargs):
+    async def call_tool(self, session, tool_name, arguments):
         if self.state == "OPEN":
             if time.time() - self.last_failure_time > self.recovery_timeout:
                 self.state = "HALF_OPEN"
@@ -334,7 +469,7 @@ class SimpleCircuitBreaker:
                 raise Exception("Circuit breaker is OPEN")
         
         try:
-            result = func(*args, **kwargs)
+            result = await session.call_tool(tool_name, arguments)
             self.on_success()
             return result
         except Exception as e:
@@ -353,16 +488,23 @@ class SimpleCircuitBreaker:
             self.state = "OPEN"
 
 # Usage
-breaker = SimpleCircuitBreaker()
-
-def scrape_with_breaker(url):
-    def _scrape():
-        response = requests.post("http://localhost:8000/scrape", 
-            json={"input_type": "url", "target": url})
-        response.raise_for_status()
-        return response.json()
+async def scrape_with_circuit_breaker():
+    breaker = MCPCircuitBreaker()
     
-    return breaker.call(_scrape)
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            try:
+                result = await breaker.call_tool(
+                    session, 
+                    "scrape_url", 
+                    {"url": "https://example.com"}
+                )
+                return result
+            except Exception as e:
+                print(f"Scraping failed: {e}")
+                return None
 ```
 
 ---
@@ -372,179 +514,269 @@ def scrape_with_breaker(url):
 ### 1. Resource Management
 
 ```python
-# Always use context managers or ensure cleanup
-async def managed_scraping():
-    scraper = WebScraper()
+async def managed_mcp_session():
+    """Properly managed MCP session with cleanup."""
+    
+    session = None
     try:
-        result = await scraper.scrape_url("https://example.com")
-        return result
+        async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                # Your MCP operations here
+                result = await session.call_tool("scrape_url", {"url": "https://example.com"})
+                return result
+                
+    except Exception as e:
+        print(f"Error in MCP session: {e}")
+        return None
     finally:
-        await scraper.close()
-
-# Or use async context manager
-async def context_scraping():
-    async with WebScraper() as scraper:
-        result = await scraper.scrape_url("https://example.com")
-        return result
+        # Cleanup is handled by context managers
+        pass
 ```
 
-### 2. Rate Limiting
+### 2. Batch Processing with Rate Limiting
 
 ```python
 import asyncio
-from asyncio import Semaphore
 
-# Limit concurrent requests
-semaphore = Semaphore(3)  # Max 3 concurrent requests
-
-async def rate_limited_scrape(url):
-    async with semaphore:
-        # Your scraping logic here
-        await asyncio.sleep(1)  # Politeness delay
-        return await scraper.scrape_url(url)
+async def rate_limited_batch_scraping(urls, delay=2.0):
+    """Scrape URLs with rate limiting using MCP tools."""
+    
+    results = []
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            for url in urls:
+                try:
+                    result = await session.call_tool(
+                        "scrape_url",
+                        arguments={"url": url}
+                    )
+                    results.append(result)
+                    
+                    # Rate limiting delay
+                    await asyncio.sleep(delay)
+                    
+                except Exception as e:
+                    print(f"Failed to scrape {url}: {e}")
+                    continue
+    
+    return results
 ```
 
-### 3. Monitoring and Logging
+### 3. Selector Development Workflow
 
 ```python
-import logging
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-def monitor_job(job_id):
-    while True:
-        try:
-            response = requests.get(f"http://localhost:8000/status/{job_id}")
-            status = response.json()
+async def develop_selectors(url, potential_selectors):
+    """Iteratively develop and test CSS selectors."""
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
             
-            logger.info(f"Job {job_id}: {status['status']}")
+            # First, validate potential selectors
+            validation_result = await session.call_tool(
+                "validate_selectors",
+                arguments={
+                    "url": url,
+                    "selectors": potential_selectors
+                }
+            )
             
-            if status['status'] in ['completed', 'failed']:
-                break
+            validation_data = validation_result.content[0].json
+            valid_selectors = {
+                k: v for k, v in potential_selectors.items() 
+                if k in validation_data['valid_selectors']
+            }
+            
+            print(f"Valid selectors: {list(valid_selectors.keys())}")
+            
+            # If we have valid selectors, test scraping
+            if valid_selectors:
+                scrape_result = await session.call_tool(
+                    "scrape_url",
+                    arguments={
+                        "url": url,
+                        "custom_selectors": valid_selectors
+                    }
+                )
                 
-            time.sleep(5)
+                scrape_data = scrape_result.content[0].json
+                print(f"Scraped {scrape_data['data_count']} items")
+                
+                return valid_selectors, scrape_data
             
-        except Exception as e:
-            logger.error(f"Error monitoring job {job_id}: {e}")
-            break
+            return None, None
+
+# Example usage
+potential_selectors = {
+    "title": "h1, .title, .headline",
+    "price": ".price, .cost",
+    "description": ".desc, .summary"
+}
+
+asyncio.run(develop_selectors("https://example.com", potential_selectors))
 ```
 
 ### 4. Configuration Management
 
 ```python
-import os
-from src.mcp_webscraper.config.settings import get_settings
-
-# Environment-specific configuration
-os.environ['MAX_CONCURRENT_JOBS'] = '10'
-os.environ['REQUEST_DELAY'] = '2.0'
-os.environ['LOG_LEVEL'] = 'DEBUG'
-
-settings = get_settings()
-print(f"Max jobs: {settings.max_concurrent_jobs}")
-print(f"Request delay: {settings.request_delay}s")
-```
-
-### 5. Custom Selector Development
-
-```python
-# Test selectors before production use
-def test_selectors(html_content, selectors):
-    from bs4 import BeautifulSoup
+async def get_webscraper_config():
+    """Retrieve and display webscraper configuration via MCP."""
     
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    containers = soup.select(selectors.get('container', 'body'))
-    print(f"Found {len(containers)} containers")
-    
-    for i, container in enumerate(containers[:3]):
-        print(f"\nContainer {i + 1}:")
-        for key, selector in selectors.items():
-            if key != 'container':
-                elements = container.select(selector)
-                values = [elem.get_text(strip=True) for elem in elements]
-                print(f"  {key}: {values}")
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Read configuration resource
+            config_content, mime_type = await session.read_resource("config://webscraper")
+            
+            print("Current WebScraper Configuration:")
+            print(config_content)
+            
+            # Read jobs status
+            status_content, mime_type = await session.read_resource("status://jobs")
+            
+            print("\nCurrent Jobs Status:")
+            print(status_content)
+
+asyncio.run(get_webscraper_config())
 ```
 
 ---
 
-## Real-World Examples
+## Real-World Integration Examples
 
-### News Aggregation
+### AI Content Aggregator
 
 ```python
-# Scrape multiple news sources
-news_sources = [
-    {
-        "url": "https://news.ycombinator.com/",
-        "selectors": {
-            "container": ".athing",
-            "title": ".titleline > a",
-            "score": ".score"
+async def ai_content_aggregator():
+    """AI agent that aggregates content from multiple sources."""
+    
+    sources = [
+        {
+            "name": "Hacker News",
+            "url": "https://news.ycombinator.com/",
+            "selectors": {
+                "container": ".athing",
+                "title": ".titleline > a",
+                "score": ".score"
+            }
+        },
+        {
+            "name": "Quotes",
+            "url": "https://quotes.toscrape.com/",
+            "selectors": {
+                "container": ".quote",
+                "text": ".text",
+                "author": ".author"
+            }
         }
-    },
-    {
-        "url": "https://www.reddit.com/r/programming/",
-        "selectors": {
-            "container": "[data-testid='post-container']",
-            "title": "h3",
-            "score": "[data-testid='vote-arrows'] button"
-        }
-    }
-]
+    ]
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            aggregated_content = []
+            
+            for source in sources:
+                try:
+                    result = await session.call_tool(
+                        "scrape_url",
+                        arguments={
+                            "url": source["url"],
+                            "custom_selectors": source["selectors"]
+                        }
+                    )
+                    
+                    scrape_data = result.content[0].json
+                    
+                    # Process and categorize content
+                    for item in scrape_data['data']:
+                        aggregated_content.append({
+                            "source": source["name"],
+                            "url": source["url"],
+                            "data": item,
+                            "extraction_method": scrape_data["extraction_method"]
+                        })
+                        
+                except Exception as e:
+                    print(f"Failed to scrape {source['name']}: {e}")
+                    continue
+            
+            print(f"Aggregated {len(aggregated_content)} items from {len(sources)} sources")
+            return aggregated_content
 
-async def aggregate_news():
-    all_articles = []
-    
-    for source in news_sources:
-        try:
-            result = await scraper.scrape_url(
-                source["url"],
-                custom_selectors=source["selectors"]
-            )
-            all_articles.extend(result.data)
-        except Exception as e:
-            print(f"Failed to scrape {source['url']}: {e}")
-    
-    return all_articles
+# Run the aggregator
+content = asyncio.run(ai_content_aggregator())
 ```
 
-### E-commerce Price Monitoring
+### Dynamic E-commerce Monitor
 
 ```python
-# Monitor product prices across sites
-products = [
-    {
-        "name": "Gaming Laptop",
-        "urls": [
-            "https://store1.com/laptop-xyz",
-            "https://store2.com/laptop-xyz",
-            "https://store3.com/laptop-xyz"
-        ],
-        "price_selector": ".price, .cost, .amount"
-    }
-]
-
-async def monitor_prices():
-    for product in products:
-        prices = []
-        for url in product["urls"]:
-            try:
-                result = await scraper.scrape_url(
-                    url,
-                    custom_selectors={
-                        "container": "body",
-                        "price": product["price_selector"]
+async def ecommerce_price_monitor():
+    """Monitor product prices across multiple e-commerce sites."""
+    
+    products = [
+        {
+            "name": "Gaming Laptop",
+            "urls": [
+                "https://store1.com/gaming-laptop",
+                "https://store2.com/gaming-laptop",
+            ],
+            "selectors": {
+                "container": ".product",
+                "price": ".price, .cost",
+                "availability": ".stock, .availability"
+            }
+        }
+    ]
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            monitoring_results = []
+            
+            for product in products:
+                product_data = {"name": product["name"], "stores": []}
+                
+                # Use batch scraping for efficiency
+                result = await session.call_tool(
+                    "scrape_batch",
+                    arguments={
+                        "urls": product["urls"],
+                        "custom_selectors": product["selectors"]
                     }
                 )
-                # Extract price logic here
-                prices.append(result)
-            except Exception as e:
-                print(f"Failed to get price from {url}: {e}")
-        
-        # Compare prices and alert if needed
+                
+                batch_data = result.content[0].json
+                
+                # Process results for each store
+                for i, url in enumerate(product["urls"]):
+                    store_items = [
+                        item for item in batch_data['results'] 
+                        if item.get('url') == url
+                    ]
+                    
+                    if store_items:
+                        price_info = store_items[0].get('metadata', {})
+                        product_data["stores"].append({
+                            "url": url,
+                            "price": price_info.get('price'),
+                            "availability": price_info.get('availability')
+                        })
+                
+                monitoring_results.append(product_data)
+            
+            return monitoring_results
+
+# Run the monitor
+prices = asyncio.run(ecommerce_price_monitor())
 ```
 
-This guide provides comprehensive examples for integrating the MCP WebScraper into various AI agent workflows and applications. 
+This comprehensive guide provides everything needed to integrate the MCP WebScraper with AI agents, from basic setup to advanced real-world applications. The examples demonstrate both the MCP protocol integration and traditional REST API usage patterns. 

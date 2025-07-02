@@ -19,6 +19,7 @@ from ..models.schemas import (
     ScrapeRequest,
     ScrapeResponse,
 )
+from ..mcp_server import mcp as mcp_server, cleanup as mcp_cleanup
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +39,6 @@ async def lifespan(app: FastAPI):
     
     # Startup
     logger.info("Starting MCP WebScraper API...")
-    logger.info(f"Configuration: {settings.get_job_manager_config()}")
     
     # Initialize job manager with configuration
     job_manager = JobManager(**settings.get_job_manager_config())
@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down MCP WebScraper API...")
+    
+    await mcp_cleanup() # Shutdown MCP manager
     
     if job_manager:
         await job_manager.stop_workers()
@@ -72,6 +74,9 @@ app = FastAPI(
     lifespan=lifespan,
     debug=settings.debug,
 )
+
+# Mount the MCP server
+app.mount("/mcp", mcp_server.streamable_http_app())
 
 # Add CORS middleware if enabled
 if settings.enable_cors:
