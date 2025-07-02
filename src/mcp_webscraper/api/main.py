@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..config import get_settings
 from ..jobs import JobManager
 from ..models.schemas import (
     ErrorResponse,
@@ -32,16 +33,15 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     global job_manager
     
+    # Get configuration
+    settings = get_settings()
+    
     # Startup
     logger.info("Starting MCP WebScraper API...")
+    logger.info(f"Configuration: {settings.get_job_manager_config()}")
     
-    # Initialize job manager with configurable limits
-    job_manager = JobManager(
-        max_concurrent_jobs=5,
-        max_playwright_instances=3,
-        max_queue_size=100,
-        output_dir="./scrapes_out"
-    )
+    # Initialize job manager with configuration
+    job_manager = JobManager(**settings.get_job_manager_config())
     
     # Start background workers
     await job_manager.start_workers()
@@ -59,6 +59,9 @@ async def lifespan(app: FastAPI):
     logger.info("MCP WebScraper API shut down complete")
 
 
+# Get settings for app configuration
+settings = get_settings()
+
 # Create FastAPI app
 app = FastAPI(
     title="MCP WebScraper",
@@ -67,28 +70,79 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
+    debug=settings.debug,
 )
 
-# Add CORS middleware for cross-origin requests
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Add CORS middleware if enabled
+if settings.enable_cors:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.get_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/", response_model=Dict[str, str])
 async def root():
     """Root endpoint - API information."""
+    current_settings = get_settings()
     return {
         "name": "MCP WebScraper",
         "version": "0.1.0",
         "description": "Local web scraping service with dynamic page support",
         "docs": "/docs",
-        "status": "running"
+        "status": "running",
+        "environment": "production" if current_settings.is_production() else "development"
     }
+
+
+@app.get("/config")
+async def get_configuration():
+    """
+    Get current application configuration.
+    
+    Returns non-sensitive configuration values for debugging and monitoring.
+    """
+    current_settings = get_settings()
+    
+    # Return safe configuration values (exclude sensitive data like API keys)
+    safe_config = {
+        "server": {
+            "host": current_settings.host,
+            "port": current_settings.port,
+            "debug": current_settings.debug,
+            "enable_cors": current_settings.enable_cors,
+        },
+        "resources": {
+            "max_concurrent_jobs": current_settings.max_concurrent_jobs,
+            "max_playwright_instances": current_settings.max_playwright_instances,
+            "max_queue_size": current_settings.max_queue_size,
+            "max_concurrent_per_domain": current_settings.max_concurrent_per_domain,
+        },
+        "scraping": {
+            "default_timeout": current_settings.default_timeout,
+            "max_retries": current_settings.max_retries,
+            "request_delay": current_settings.request_delay,
+            "respect_robots_txt": current_settings.respect_robots_txt,
+            "user_agent_rotation": current_settings.user_agent_rotation,
+        },
+        "circuit_breaker": {
+            "failure_threshold": current_settings.circuit_breaker_failure_threshold,
+            "recovery_timeout": current_settings.circuit_breaker_recovery_timeout,
+        },
+        "logging": {
+            "log_level": current_settings.log_level,
+            "log_file": current_settings.log_file,
+        },
+        "monitoring": {
+            "enable_metrics": current_settings.enable_metrics,
+            "health_check_interval": current_settings.health_check_interval,
+        }
+    }
+    
+    return safe_config
 
 
 @app.post("/scrape", response_model=ScrapeResponse)

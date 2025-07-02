@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 import uuid
 
+from ..config import get_settings
 from ..core import WebScraper
 from ..models.schemas import JobStatus, JobStatusResponse, ScrapeRequest, ScrapeResult
 
@@ -251,12 +252,9 @@ class JobManager:
     
     async def _execute_scrape(self, job_id: str, request: ScrapeRequest) -> ScrapeResult:
         """Execute the actual scraping operation."""
-        # Configure scraper
-        scraper_config = {
-            "timeout": 30,
-            "max_retries": 3,
-            "request_delay": 1.0,
-        }
+        # Get configuration
+        settings = get_settings()
+        scraper_config = settings.get_scraper_config()
         
         async with WebScraper(**scraper_config) as scraper:
             if request.input_type.value == "url":

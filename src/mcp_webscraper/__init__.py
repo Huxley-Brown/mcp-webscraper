@@ -5,4 +5,9 @@ A locally-run service that can scrape both static HTML and JavaScript-heavy page
 expose its functionality through an MCP-style REST API, and allow command-line usage.
 """
 
-__version__ = "0.1.0" 
+__version__ = "0.1.0"
+
+# Make configuration easily accessible
+from .config import get_settings
+
+__all__ = ["get_settings"] 
