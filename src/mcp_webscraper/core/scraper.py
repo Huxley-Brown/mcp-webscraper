@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -14,6 +14,8 @@ from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 
 from ..models.schemas import ExtractionMethod, ScrapedData, ScrapeResult
 from .detector import JavaScriptDetector
+from .anti_scraping import AntiScrapingManager
+from .error_handling import ErrorHandler, ScrapingError
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,9 @@ class WebScraper:
         user_agent: Optional[str] = None,
         respect_robots: bool = True,
         request_delay: float = 1.0,
+        user_agent_rotation: bool = True,
+        max_concurrent_per_domain: int = 2,
+        custom_user_agents: Optional[List[str]] = None,
     ):
         """
         Initialize the web scraper.
@@ -35,29 +40,41 @@ class WebScraper:
         Args:
             timeout: Request timeout in seconds
             max_retries: Maximum retry attempts
-            user_agent: Custom user agent string
+            user_agent: Custom user agent string (ignored if rotation enabled)
             respect_robots: Whether to check robots.txt
             request_delay: Delay between requests in seconds
+            user_agent_rotation: Whether to rotate user agents
+            max_concurrent_per_domain: Max concurrent requests per domain
+            custom_user_agents: Custom user agent list for rotation
         """
         self.timeout = timeout
         self.max_retries = max_retries
         self.request_delay = request_delay
         self.respect_robots = respect_robots
         
-        # Default user agent
-        self.user_agent = user_agent or (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        )
-        
         # Initialize components
         self.js_detector = JavaScriptDetector()
+        self.error_handler = ErrorHandler()
+        self.anti_scraping = AntiScrapingManager(
+            respect_robots_txt=respect_robots,
+            user_agent_rotation=user_agent_rotation,
+            default_delay=request_delay,
+            max_concurrent_per_domain=max_concurrent_per_domain,
+            custom_user_agents=custom_user_agents,
+        )
+        
+        # Browser management
         self._browser: Optional[Browser] = None
         
-        # Configure HTTPX client
+        # Set up HTTP client with base configuration
+        # User-Agent will be set per request by anti_scraping
+        base_headers = {}
+        if not user_agent_rotation and user_agent:
+            base_headers["User-Agent"] = user_agent
+        
         self.http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout),
-            headers={"User-Agent": self.user_agent},
+            headers=base_headers,
             follow_redirects=True,
         )
     
@@ -149,61 +166,94 @@ class WebScraper:
     
     async def _fetch_static(self, url: str) -> str:
         """Fetch page content using HTTPX (static content)."""
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self.max_retries),
-            wait=wait_exponential(multiplier=1, min=1, max=10),
-            reraise=True,
-        ):
-            with attempt:
-                logger.debug(f"Fetching static content from: {url}")
-                
-                # Add delay for politeness
-                if self.request_delay > 0:
-                    await asyncio.sleep(self.request_delay)
-                
-                response = await self.http_client.get(url)
-                response.raise_for_status()
-                
-                return response.text
+        logger.debug(f"Fetching static content from: {url}")
+        
+        # Get domain for circuit breaker
+        domain = self._extract_domain(url)
+        
+        async def _do_fetch():
+            # Apply anti-scraping measures
+            should_proceed, headers, crawl_delay = await self.anti_scraping.prepare_request(
+                url, self.http_client
+            )
+            
+            if not should_proceed:
+                raise ScrapingError(
+                    f"Request blocked by robots.txt: {url}",
+                    url=url
+                )
+            
+            # Merge headers with existing client headers
+            merged_headers = {**self.http_client.headers, **headers}
+            
+            # Make the request
+            response = await self.http_client.get(url, headers=headers)
+            response.raise_for_status()
+            
+            return response.text
+        
+        # Use error handler with circuit breaker
+        return await self.error_handler.handle_with_retry(
+            _do_fetch,
+            circuit_breaker_key=domain,
+            url=url
+        )
     
     async def _fetch_dynamic(self, url: str) -> str:
         """Fetch page content using Playwright (dynamic content)."""
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self.max_retries),
-            wait=wait_exponential(multiplier=1, min=1, max=10),
-            reraise=True,
-        ):
-            with attempt:
-                logger.debug(f"Fetching dynamic content from: {url}")
+        logger.debug(f"Fetching dynamic content from: {url}")
+        
+        # Get domain for circuit breaker
+        domain = self._extract_domain(url)
+        
+        async def _do_fetch_dynamic():
+            # Apply anti-scraping measures (for rate limiting)
+            should_proceed, headers, crawl_delay = await self.anti_scraping.prepare_request(
+                url, self.http_client
+            )
+            
+            if not should_proceed:
+                raise ScrapingError(
+                    f"Request blocked by robots.txt: {url}",
+                    url=url
+                )
+            
+            # Initialize browser if needed
+            if not self._browser:
+                await self._init_browser()
+            
+            # Create new page
+            page = await self._browser.new_page()
+            
+            try:
+                # Configure page with user agent from anti-scraping
+                user_agent = headers.get("User-Agent") or self.anti_scraping.get_current_user_agent()
+                await page.set_extra_http_headers({"User-Agent": user_agent})
                 
-                # Initialize browser if needed
-                if not self._browser:
-                    await self._init_browser()
+                # Navigate to URL with network idle wait
+                await page.goto(
+                    url,
+                    wait_until="networkidle",
+                    timeout=self.timeout * 1000,  # Convert to milliseconds
+                )
                 
-                # Create new page
-                page = await self._browser.new_page()
+                # Wait a bit more for any lazy-loaded content
+                await page.wait_for_timeout(2000)
                 
-                try:
-                    # Configure page
-                    await page.set_extra_http_headers({"User-Agent": self.user_agent})
-                    
-                    # Navigate to URL with network idle wait
-                    await page.goto(
-                        url,
-                        wait_until="networkidle",
-                        timeout=self.timeout * 1000,  # Convert to milliseconds
-                    )
-                    
-                    # Wait a bit more for any lazy-loaded content
-                    await page.wait_for_timeout(2000)
-                    
-                    # Get rendered HTML
-                    html = await page.content()
-                    
-                    return html
-                    
-                finally:
-                    await page.close()
+                # Get rendered HTML
+                html = await page.content()
+                
+                return html
+                
+            finally:
+                await page.close()
+        
+        # Use error handler with circuit breaker
+        return await self.error_handler.handle_with_retry(
+            _do_fetch_dynamic,
+            circuit_breaker_key=domain,
+            url=url
+        )
     
     async def _extract_data(
         self,
@@ -368,6 +418,30 @@ class WebScraper:
         """Generate a unique job ID."""
         import uuid
         return uuid.uuid4().hex[:8]
+    
+    def _extract_domain(self, url: str) -> str:
+        """Extract domain from URL for circuit breaker keys."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            return url
+    
+    def get_scraping_stats(self) -> Dict[str, Any]:
+        """Get comprehensive scraping statistics."""
+        return {
+            "error_stats": self.error_handler.get_error_stats(),
+            "anti_scraping_stats": self.anti_scraping.get_stats(),
+            "circuit_breakers": {
+                domain: {
+                    "state": cb.state,
+                    "failure_count": cb.failure_count,
+                    "last_failure": cb.last_failure_time
+                }
+                for domain, cb in self.error_handler.circuit_breakers.items()
+            }
+        }
     
     async def close(self) -> None:
         """Clean up resources."""

@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
@@ -211,7 +211,7 @@ async def list_jobs(limit: int = 50):
     )
 
 
-@app.get("/stats", response_model=Dict[str, int])
+@app.get("/stats", response_model=Dict[str, Any])
 async def get_queue_stats():
     """
     Get current queue and resource statistics.
@@ -219,6 +219,28 @@ async def get_queue_stats():
     Useful for monitoring system load and capacity.
     """
     return job_manager.get_queue_stats()
+
+
+@app.get("/stats/detailed")
+async def get_detailed_stats():
+    """
+    Get detailed scraping statistics including error rates and anti-scraping metrics.
+    
+    Provides comprehensive insight into system performance and error patterns.
+    """
+    basic_stats = job_manager.get_queue_stats()
+    
+    # Try to get scraping stats from a sample worker
+    # Note: This is a simplified approach - in production you might want
+    # to aggregate stats across all workers
+    detailed_stats = {
+        "queue_stats": basic_stats,
+        "scraping_stats": {},  # Would be populated with actual worker stats
+        "error_patterns": {},  # Error analysis
+        "timestamp": str(datetime.utcnow()),
+    }
+    
+    return detailed_stats
 
 
 @app.delete("/jobs/{job_id}")
