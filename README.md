@@ -7,9 +7,15 @@ A production-ready local web scraping service with dynamic page support, designe
 ### Core Capabilities
 - **Smart Content Detection**: Advanced JavaScript detection with sophisticated scoring system
 - **Dual Scraping Modes**: Efficient static (HTTPX) + dynamic (Playwright) with automatic routing
-- **MCP-Compatible**: REST API specifically designed for AI agent integration
+- **MCP Server Integration**: Native MCP protocol support with three specialized tools
 - **Non-blocking Processing**: Asynchronous job queue with real-time status tracking
 - **Local-only**: No external dependencies or cloud services required
+
+### MCP Tools Available
+- **`scrape_url`**: Scrape a single URL with custom selectors and metadata extraction
+- **`scrape_batch`**: Process multiple URLs efficiently with combined results
+- **`validate_selectors`**: Test CSS selectors before scraping to ensure accuracy
+- **MCP Resources**: Access configuration and job status information
 
 ### Enterprise Features
 - **Circuit Breakers**: Automatic failure detection and recovery for unreliable domains
@@ -34,6 +40,7 @@ A production-ready local web scraping service with dynamic page support, designe
 ## 🏗️ Architecture
 
 - **FastAPI** REST server with auto-generated OpenAPI documentation
+- **MCP Server** mounted at `/mcp` with streamable HTTP transport
 - **HTTPX** for efficient HTTP requests with HTTP/2 support
 - **Playwright** for JavaScript-heavy pages (headless Chromium)
 - **BeautifulSoup + lxml** for robust HTML parsing
@@ -66,12 +73,67 @@ A production-ready local web scraping service with dynamic page support, designe
 
 3. **Quick test**:
    ```bash
-   make run  # Start the API server
+   make run  # Start the API server with MCP endpoint
    # In another terminal:
    python -m src.mcp_webscraper.cli scrape --url https://quotes.toscrape.com/
    ```
 
 ## 📖 Usage
+
+### MCP Integration (Recommended for AI Agents)
+
+#### Cursor IDE Setup
+
+**Important**: Do NOT run the MCP server command in your terminal. Instead, configure it in Cursor's MCP configuration file.
+
+1. **Create `.cursor/mcp.json` in your project root**:
+   ```json
+   {
+     "servers": {
+       "webscraper": {
+         "command": "python",
+         "args": ["-m", "src.mcp_webscraper.mcp_server"],
+         "cwd": "/absolute/path/to/your/webscraper/project"
+       }
+     }
+   }
+   ```
+
+2. **Restart Cursor** and use in chat:
+   ```
+   @webscraper scrape_url url="https://quotes.toscrape.com/" custom_selectors='{"container": ".quote", "text": ".text", "author": ".author"}'
+   ```
+
+#### Python MCP Client
+
+```python
+import asyncio
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async def scrape_with_mcp():
+    # Connect to MCP server (requires API server running)
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Use MCP tools
+            result = await session.call_tool("scrape_url", {
+                "url": "https://quotes.toscrape.com/",
+                "custom_selectors": {
+                    "container": ".quote",
+                    "text": ".text",
+                    "author": ".author"
+                }
+            })
+            
+            scraped_data = result.content[0].json
+            print(f"Scraped {scraped_data['data_count']} items")
+            return scraped_data
+
+# Run the MCP client
+asyncio.run(scrape_with_mcp())
+```
 
 ### CLI Interface
 
@@ -147,6 +209,7 @@ curl "http://localhost:8000/results/$JOB_ID"
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Service information and status |
+| `/mcp/*` | * | MCP server endpoints (tools and resources) |
 | `/scrape` | POST | Submit scraping job |
 | `/status/{job_id}` | GET | Check job status |
 | `/results/{job_id}` | GET | Download results |
@@ -280,6 +343,7 @@ webscraper/
 │   ├── jobs/                   # Job queue and workers
 │   ├── models/                 # Pydantic data models
 │   ├── config/                 # Configuration management
+│   ├── mcp_server.py          # MCP protocol server
 │   └── cli.py                  # Command-line interface
 ├── tests/                      # Comprehensive test suite
 ├── docs/                       # Documentation
@@ -320,42 +384,104 @@ make lint
 
 ## 🚀 MCP Integration Examples
 
-### Basic AI Agent Integration
+### Advanced MCP Client Usage
 
 ```python
-import requests
 import asyncio
-from typing import List, Dict
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
-class WebScrapingAgent:
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url
+async def advanced_mcp_scraping():
+    """Advanced MCP integration with error handling and batch processing."""
     
-    async def scrape_urls(self, urls: List[str]) -> List[Dict]:
-        """Scrape multiple URLs concurrently."""
-        jobs = []
-        
-        # Submit all jobs
-        for url in urls:
-            response = requests.post(f"{self.base_url}/scrape", 
-                json={"input_type": "url", "target": url})
-            jobs.append(response.json()["job_id"])
-        
-        # Wait for completion and collect results
-        results = []
-        for job_id in jobs:
-            while True:
-                status = requests.get(f"{self.base_url}/status/{job_id}").json()
-                if status["status"] == "completed":
-                    result = requests.get(f"{self.base_url}/results/{job_id}").json()
-                    results.append(result)
-                    break
-                await asyncio.sleep(1)
-        
-        return results
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Validate selectors first
+            validation = await session.call_tool("validate_selectors", {
+                "url": "https://news.ycombinator.com/",
+                "selectors": {
+                    "container": ".athing",
+                    "title": ".titleline > a",
+                    "score": ".score"
+                }
+            })
+            
+            valid_selectors = validation.content[0].json['valid_selectors']
+            print(f"Valid selectors: {valid_selectors}")
+            
+            # Batch scrape multiple URLs
+            urls = [
+                "https://quotes.toscrape.com/page/1/",
+                "https://quotes.toscrape.com/page/2/"
+            ]
+            
+            batch_result = await session.call_tool("scrape_batch", {
+                "urls": urls,
+                "custom_selectors": {
+                    "container": ".quote",
+                    "text": ".text",
+                    "author": ".author"
+                }
+            })
+            
+            batch_data = batch_result.content[0].json
+            print(f"Batch scraped {batch_data['total_items']} items from {batch_data['total_urls']} URLs")
+            
+            return batch_data
+
+# Run advanced example
+asyncio.run(advanced_mcp_scraping())
 ```
 
-See [MCP Integration Guide](docs/MCP_INTEGRATION.md) for complete examples.
+### AI Content Aggregator Example
+
+```python
+async def ai_content_aggregator():
+    """Example AI agent that aggregates content from multiple sources using MCP."""
+    
+    sources = [
+        {
+            "name": "Hacker News",
+            "url": "https://news.ycombinator.com/",
+            "selectors": {"container": ".athing", "title": ".titleline > a"}
+        },
+        {
+            "name": "Quotes",
+            "url": "https://quotes.toscrape.com/",
+            "selectors": {"container": ".quote", "text": ".text", "author": ".author"}
+        }
+    ]
+    
+    async with streamablehttp_client("http://localhost:8000/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            aggregated_content = []
+            
+            for source in sources:
+                result = await session.call_tool("scrape_url", {
+                    "url": source["url"],
+                    "custom_selectors": source["selectors"]
+                })
+                
+                scrape_data = result.content[0].json
+                for item in scrape_data['data']:
+                    aggregated_content.append({
+                        "source": source["name"],
+                        "data": item,
+                        "extraction_method": scrape_data["extraction_method"]
+                    })
+            
+            return aggregated_content
+
+# Run aggregator
+content = asyncio.run(ai_content_aggregator())
+print(f"Aggregated {len(content)} items from multiple sources")
+```
+
+See [MCP Integration Guide](docs/MCP_INTEGRATION.md) for complete examples and Cursor setup.
 
 ## 📈 Performance Benchmarks
 
