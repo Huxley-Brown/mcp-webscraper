@@ -583,4 +583,3 @@ C. Bibliography / Reference Links
     FastAPI Official Site – Type and background task usage (FastAPI docs)
     fastapi.tiangolo.com
     fastapi.tiangolo.com
-    .
