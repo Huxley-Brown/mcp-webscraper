@@ -155,6 +155,7 @@ cython_debug/
 # Project specific
 scrapes_out/
 *.json
+*.csv
 inputs/urls.csv
 logs/
 .DS_Store
