@@ -84,20 +84,22 @@ A production-ready local web scraping service with dynamic page support, designe
 
 #### Cursor IDE Setup
 
-**Important**: Do NOT run the MCP server command in your terminal. Instead, configure it in Cursor's MCP configuration file.
+**Important**: Do NOT run the MCP server command in your terminal. Configure it in Cursor so it manages the server automatically.
 
-1. **Create `.cursor/mcp.json` in your project root**:
+1. **Create `.cursor/mcp.json` in your project root** (recommended):
    ```json
    {
      "servers": {
        "webscraper": {
-         "command": "python",
-         "args": ["-m", "src.mcp_webscraper.mcp_server"],
-         "cwd": "/absolute/path/to/your/webscraper/project"
+         "command": "/absolute/path/to/webscraper/.venv/bin/python",
+         "args": ["-m", "mcp_webscraper.mcp_server"]
        }
      }
    }
    ```
+
+   - This uses the installed package entry (`mcp_webscraper.mcp_server`) from your local venv and requires `pip install -e .` to have been run in that venv.
+   - Alternative (run from source tree): use `"args": ["-m", "src.mcp_webscraper.mcp_server"]` and ensure the project root is on `PYTHONPATH` or set `"cwd"` to the project directory.
 
 2. **Restart Cursor** and use in chat:
    ```
@@ -365,6 +367,18 @@ pre-commit install
 # Run development server with auto-reload
 make dev
 ```
+
+### Troubleshooting (after moving directories)
+
+- Recreate the virtual environment and reinstall deps:
+  ```bash
+  rm -rf .venv
+  python -m venv .venv
+  . .venv/bin/activate
+  pip install -e .
+  python -m playwright install chromium
+  ```
+- Update Cursor config paths if they referenced the old location. Prefer the project-level `./.cursor/mcp.json` shown above.
 
 ### Quality Assurance
 

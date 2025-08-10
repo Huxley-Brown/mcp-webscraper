@@ -267,9 +267,22 @@ asyncio.run(read_webscraper_resources())
 
 ### Setup for Cursor IDE
 
-**Important**: Do NOT run the MCP server command in your terminal. Instead, configure it in Cursor's MCP configuration file so Cursor can manage the server automatically.
+**Important**: Do NOT run the MCP server command in your terminal. Configure it in Cursor so Cursor can manage the server automatically.
 
-1. **Create the MCP configuration file** at `.cursor/mcp.json` in your project root:
+1. Project config (recommended) — create `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "servers": {
+    "webscraper": {
+      "command": "/absolute/path/to/webscraper/.venv/bin/python",
+      "args": ["-m", "mcp_webscraper.mcp_server"]
+    }
+  }
+}
+```
+
+2. Alternative (from source tree) — if you prefer running the module from `src`:
 
 ```json
 {
@@ -284,10 +297,9 @@ asyncio.run(read_webscraper_resources())
 ```
 
 **Key Points:**
-- Use the **absolute path** to your project directory in the `cwd` field
-- The `command` and `args` tell Cursor how to start the MCP server
-- Cursor will automatically start/stop the server as needed
-- **DO NOT** run `python -m src.mcp_webscraper.mcp_server` in your terminal
+- Prefer the project-level config to avoid global path drift.
+- When using the installed package form (`mcp_webscraper.mcp_server`), ensure your venv has `pip install -e .` run.
+- Cursor will automatically start/stop the server as needed.
 
 2. **Restart Cursor** to load the MCP server configuration.
 
@@ -310,6 +322,18 @@ asyncio.run(read_webscraper_resources())
 
 # Batch scrape multiple pages
 @webscraper scrape_batch urls='["https://quotes.toscrape.com/page/1/", "https://quotes.toscrape.com/page/2/"]'
+
+### Troubleshooting after moving directories
+
+- Recreate your virtual environment and reinstall dependencies:
+  ```bash
+  rm -rf .venv && python -m venv .venv
+  . .venv/bin/activate
+  pip install -e .
+  python -m playwright install chromium
+  ```
+- Ensure your project-level `.cursor/mcp.json` points to the new absolute path of `.venv/bin/python`.
+- Avoid setting `PYTHONPATH` to old paths in global `~/.cursor/mcp.json`; prefer the project config.
 ```
 
 ---
