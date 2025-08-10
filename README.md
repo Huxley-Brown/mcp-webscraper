@@ -1,5 +1,82 @@
 # MCP WebScraper
 
+MCP WebScraper is a local web‑scraping service that exposes simple tools over the Model Context Protocol (MCP). It can scrape static pages (HTTPX) and JavaScript‑heavy pages (Playwright). The primary use is to run it locally as an MCP server so Cursor can call tools like `scrape_url`, `scrape_batch`, and `validate_selectors`.
+
+## Quick start (run as an MCP server in Cursor)
+
+Requirements: Python 3.9+, internet access to install Playwright browsers
+
+1) Clone and create a virtual environment
+```bash
+git clone https://github.com/Huxley-Brown/mcp-webscraper.git
+cd mcp-webscraper
+python -m venv .venv
+. .venv/bin/activate   # On Windows: .venv\\Scripts\\activate
+```
+
+2) Install the project and browsers
+```bash
+pip install -e .
+python -m playwright install chromium
+```
+
+3) Add a project MCP config (recommended)
+Create `./.cursor/mcp.json` in the project root with your absolute path:
+```json
+{
+  "servers": {
+    "webscraper": {
+      "command": "/absolute/path/to/webscraper/.venv/bin/python",
+      "args": ["-m", "mcp_webscraper.mcp_server"]
+    }
+  }
+}
+```
+
+4) Restart Cursor
+
+5) Use in Cursor chat
+```
+@webscraper scrape_url url="https://quotes.toscrape.com/"
+```
+
+That’s it. Cursor manages the MCP server process automatically.
+
+## Optional: CLI or REST
+
+- CLI (single URL):
+```bash
+python -m src.mcp_webscraper.cli scrape --url https://quotes.toscrape.com/
+```
+
+- API server (with MCP HTTP endpoint mounted at /mcp):
+```bash
+uvicorn src.mcp_webscraper.api.main:app --host 0.0.0.0 --port 8000
+```
+
+## Troubleshooting (after moving folders)
+
+If you moved the project and the server won’t start:
+- Recreate venv and reinstall:
+```bash
+rm -rf .venv && python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+python -m playwright install chromium
+```
+- Ensure `./.cursor/mcp.json` points to the new absolute path of `.venv/bin/python`.
+- Prefer the project‑level config over a global `~/.cursor/mcp.json` to avoid path drift.
+
+## What tools it provides
+
+- `scrape_url(url, custom_selectors?, force_dynamic?)`
+- `scrape_batch(urls[], custom_selectors?, force_dynamic?)`
+- `validate_selectors(url, selectors{})`
+
+For more examples, see `docs/MCP_INTEGRATION.md`.
+
+# MCP WebScraper
+
 A production-ready local web scraping service with dynamic page support, designed as an MCP (Model Context Protocol) server for AI agents. Features comprehensive error handling, intelligent JavaScript detection, and enterprise-grade reliability.
 
 ## 🌟 Features
@@ -84,17 +161,16 @@ A production-ready local web scraping service with dynamic page support, designe
 
 #### Cursor IDE Setup
 
-**Important**: Do NOT run the MCP server command in your terminal. Configure it in Cursor so it manages the server automatically.
-
 1. **Create `.cursor/mcp.json` in your project root** (recommended):
    ```json
    {
-     "servers": {
-       "webscraper": {
-         "command": "/absolute/path/to/webscraper/.venv/bin/python",
-         "args": ["-m", "mcp_webscraper.mcp_server"]
-       }
-     }
+    "mcp servers"
+      "servers": {
+        "webscraper": {
+          "command": "/absolute/path/to/webscraper/.venv/bin/python",
+          "args": ["-m", "mcp_webscraper.mcp_server"]
+        }
+      }
    }
    ```
 
